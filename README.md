@@ -1,2 +1,64 @@
-# maryland_immigration_arrests
+# Maryland Immigration Arrests
+
 This repository contains the data analysis for the story about immigration enforcement in Maryland and the detention center transfers individuals face.
+
+This repository contains the data and analysis for the Capital News Service story, "What comes after the ICE arrest video?." The in-depth report, conducted in partnership with the Howard Center for Investigative Journalism, dives into the next steps in the immigration process once individuals are arrested through located or non-custodial apprehension methods in Maryland. 
+
+# Key Findings
+Our analysis of ICE data from the start of the Trump administration found that:
+-  More than 2,000 individuals have been swept up by federal agents from streets and communities in Maryland as part of President Donald Trump’s escalated immigration enforcement. 
+- Most of these individuals picked up by Immigration and Customs Enforcement officers are initially processed and temporarily held in Salisbury or Baltimore, then transferred to detention facilities nationwide.
+- After that, three out of four of them are moved to Louisiana or Texas, with others going to Pennsylvania, Virginia and about a dozen other U.S. states – separating them from their families, their lawyers and their support systems. 
+- Individuals are only supposed to stay in these hold rooms for 72 hours, under a limit imposed by federal mandate. Yet about a quarter of individuals arrested in the field and booked into the Baltimore holding rooms have gone above that 72-hour limit.
+
+# How to Use This Repository
+
+This repository is intended to provide our data and methodology for the public to review and reproduce our findings.
+
+The repository includes:
+README.md: This file, which explains the project, data, and methodology.
+far_from_home.Rmd : An R Markdown script containing all code used for the analysis.
+far_from_home_graphics : An R Markdown script containing all code used to create the graphics.
+To execute the analysis in this repository, first download the data files from the link below. The original datasets should be stored in a data/ folder at the root of this repository.
+
+# Data
+Large data files are excluded from this repository; data associated with this repository can be obtained here:
+
+[Data Files (Google Drive)](https://drive.google.com/drive/folders/1VqsJH3MKBzSEmm_re0ONH8M8b5ruoqso?usp=sharing)
+
+The key datasets used in this analysis are:
+
+arrests-latest.xlsx
+ICE Detentions_LESA-STU_FINAL Release_raw.xlsx
+facilities.csv
+
+# Methodology
+
+To investigate the transfers between detention centers of individuals arrested by ICE agents in Maryland, Capital News Service and the Howard Center analyzed administrative records from U.S. Immigration and Customs Enforcement (ICE). The data was collected by the Deportation Data Project.
+
+Our analysis focused on records from the start of the Trump administration on January 20, 2025. We began by filtering ICE's administrative arrest records to isolate those that occurred on or after the inauguration date and fell within the agency's "Baltimore Area of Responsibility" and occurred in the state of Maryland.
+
+From there, we identified all arrests made through the "Located" and "Non-custodial arrests" apprehension methods. Then, we match stay book in date and time as close as possible to their apprehension date to find the detentions for that specific arrest. We were then able to find each detention facility an individual was booked into within that stay. 
+
+Using the individuals book in date and time and their book out date and time, we were able to calculate how long an individual stayed in the Baltimore Hold Room. 
+
+# Data Dictionary
+The following definitions are adapted from the Deportation Data Project's Codebook.
+
+unique_identifier: A unique, anonymized identifier assigned to each individual by ICE. This is consistent across datasets.
+apprehension_date: The date on which the individual was apprehended by ICE.
+apprehension_aor: The ICE Area of Responsibility (AOR) where the apprehension occurred. An AOR is a geographical area overseen by a specific ICE field office.
+apprehension_method: The method through which ICE took custody of the individual (e.g., 287(g) Program, Fugitive Operations).
+apprehension_state: The state where the apprehension occurred. 
+stay_book_in_date_time: The date and time an individual began their stay in ICE detention. 
+book_in_date_time: The date and time an individual was booked into subsequent ICE detention facilites.
+detention_facility_code: unique code for each ICE detention facility. 
+detention_facility: name for each ICE detention facility.
+detention_book_out_date_time: date and time an individual was booked out of each ICE detention facility. 
+
+
+# Acknowledgements
+This analysis was made possible by data collected by the Deportation Data Project. The findings are based on an analysis of government records generated by ICE and provided by the project.
+
+# Credits
+Writing and reporting by Aline Behar Kado. Additional writing and data reporting by Raphael Romero Ruiz and Haley Parsely. Graphics by Aline Behar Kado. Editing by Christi Parsons, director of the Capitol News Service Annapolis Bureau, Sean Mussenden, data editor for the Howard Center for Investigative Journalism, and Adam Marton, director of the Capital News Service Data Lab Bureau.
