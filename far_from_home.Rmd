@@ -1,0 +1,285 @@
+---
+title: "far_from_home"
+output: html_document
+date: "2025-12-09"
+---
+## Load Libraries
+```{r}
+library(tidyverse)
+library(lubridate)
+library(janitor)
+library(readxl)
+library(sf)
+library(openxlsx)
+library(leaflet)
+```
+
+
+## Load ICE Data Files
+```{r}
+
+# CHUNK 1: Load ICE administrative arrests data
+arrests <- read_xlsx("arrests-latest.xlsx") %>%
+  # Convert column names to lowercase with underscores (e.g., "Apprehension Date" -> "apprehension_date")
+  clean_names()
+
+```
+```{r}
+
+# CHUNK 2: Load ICE detainers data
+
+detainers <- read_xlsx("detainers-latest.xlsx", 
+                       # Scan first 100,000 rows to properly detect column types
+                       guess_max = 100000) %>%
+  # Standardize column names
+  clean_names()
+
+```
+```{r}
+
+# CHUNK 3: Load ICE detentions data from two sheets and combine
+
+# Read first sheet of detentions file
+
+
+detentions_1 <- read.csv("ICE Detentions_LESA-STU_FINAL Release_raw_sheet1.csv", skip = 6)|>
+  clean_names()
+
+# Read second sheet of detentions file
+
+detentions_2 <- read.csv("ICE Detentions_LESA-STU_FINAL Release_raw_sheet2.csv", skip = 6)|>
+  clean_names()
+
+# Combine both sheets into a single detentions dataset
+# Stack rows from sheet 1 and sheet 2 on top of each other
+detentions_full <- bind_rows(detentions_1, detentions_2)
+
+```
+```{r}
+
+# CHUNK 4: Read in facilities from https://www.vera.org/ice-detention-trends. This spreadsheet was fact checked individually and modified to include facilities that were missing. The facilities missing were: NRLKCMI - North Lake Correctional Facility, URSLATX - Ursula Centralized Processing Center, EROFCB - ERO El Paso Camp East Montana, LICEPLA - Louisiana ICE Processing Center and FLDSSFS - Florida Soft-Sided Facility- South.
+
+facilities <- read_csv("facilities.csv")
+
+```
+
+##Defining dates
+```{r}
+#defining inauguration_date to mark start of Donald Trump's second presidential term
+inauguration_date<- as_date("2025-01-20")
+```
+
+## As immigration enforcement has escalated across the country during President Trump’s administration, more than 2,000 individuals have been swept up in Maryland by Immigration and Customs Enforcement agents through field arrests made while they were on the streets, right outside their doorsteps or elsewhere in the community.
+
+```{r}
+
+## CHUNK 1: Finding people arrested off the streets in Maryland
+
+##Filtering arrests for "Non-Custodial" and "Located" arrests in the Baltimore Area of Responsibility
+md_street_arrests <- arrests|> 
+  filter(apprehension_aor == "Baltimore Area of Responsibility",
+         apprehension_state =="MARYLAND",
+         apprehension_method =="Non-Custodial Arrest"|
+           apprehension_method == "Located")
+
+```
+```{r}
+
+## CHUNK 2: Finding the number of arrests under Trump
+
+##Mutating a column for arrests under Trump and a month column
+md_street_arrests <- md_street_arrests |>
+  mutate(
+    under_trump = (apprehension_date >= inauguration_date),
+    month = month(apprehension_date),
+    year = year(apprehension_date),
+    month_year = paste(month,"/",year)
+    )
+
+md_street_arrests |> 
+  group_by(under_trump)|>
+  summarize(count = n())
+
+```
+
+## Most of these individuals are initially processed and temporarily held in Salisbury or Baltimore, then transferred to detention facilities nationwide.
+
+```{r}
+
+## CHUNK 1: Join arrests with detention records
+
+md_arrests_detentions<- md_street_arrests |>
+  #filtering so we only get the arrests under Trump
+  filter(under_trump == "TRUE")|>
+  inner_join(detentions_full, by = "unique_identifier")|>
+  #selecting the columns to simplify the dataset
+  select(unique_identifier, apprehension_date, apprehension_state, apprehension_aor, apprehension_method, stay_book_in_date_time, book_in_date_time, under_trump, detention_facility_code, detention_facility, detention_book_out_date_time)
+
+```
+```{r}
+
+## CHUNK 2: Making a column that shows us the difference in days between their apprehension date and their stay book in date. This will help us determine if that detention stay comes from the arrest we are analyzing and eliminates duplicates.
+
+md_arrests_detentions <- md_arrests_detentions|>
+  mutate(
+    apprehension_date = as_date(apprehension_date),
+    stay_book_in_date_time = mdy_hm(stay_book_in_date_time),
+    book_in_date_time = mdy_hm(book_in_date_time),
+    days_diff = as.numeric(difftime(stay_book_in_date_time, apprehension_date, units = "days"))
+  )
+
+#filter to match the detention stays with the specific arrest
+
+md_arrests_with_detention <- md_arrests_detentions|>
+  #we manually checked to check that up to 9 days after the apprehension date was their only detention stay.
+  filter(days_diff >= -1,
+           days_diff <= 9)|>
+  # Arrange by first book in to take first detention stays
+  arrange(unique_identifier, stay_book_in_date_time, book_in_date_time)|>
+  group_by(unique_identifier, stay_book_in_date_time) |>
+  #Keep one row per unique_identifier + facility + book-in date/time
+  distinct(unique_identifier, apprehension_date, stay_book_in_date_time, 
+           detention_facility_code, .keep_all = TRUE)|>
+  arrange(unique_identifier, book_in_date_time)|>
+  # Number the facilities within each stay
+  mutate(
+    facility_number = row_number()
+  ) 
+
+```
+```{r}
+
+# CHUNK 3: Create a dataset with sequential detention facilities
+
+detention_sequence <- md_arrests_with_detention |>
+  # Filter out rows with NA book_in_date_time (can't sort without it)
+  filter(!is.na(book_in_date_time)) |>
+  # Remove duplicate facility/time combinations
+  distinct(unique_identifier, stay_book_in_date_time, 
+           detention_facility_code, book_in_date_time, 
+           .keep_all = TRUE)|>
+  # Arrange by first book in to take first detention stays
+  arrange(unique_identifier, stay_book_in_date_time, book_in_date_time)|>
+  group_by(unique_identifier, stay_book_in_date_time) |>
+  # Number the facilities within each stay
+  mutate(
+    facility_number = row_number()
+  ) |>
+  ungroup() 
+```
+ 
+```{r}
+
+ # CHUNK 3: Pivot wider to create detention_facility1, detention_facility2, etc.
+detention_transfers<- detention_sequence|>
+  pivot_wider(
+    names_from = facility_number,
+    names_prefix = "detention_facility_",
+    values_from = detention_facility_code
+  )|>
+  group_by(unique_identifier)|>
+  summarise(across(starts_with("detention_facility"), 
+                   ~na.omit(.x)[1]))
+
+```
+```{r}
+## CHUNK 4: Create a dataframe of Maryland detention facilities
+
+md_facilities <- facilities|>
+  filter(state == "MD")
+
+```
+```{r}
+## CHUNK 5: Mutate a column for if the second detention is in Maryland
+detention_transfers_md<- detention_transfers|>
+  mutate(
+    second_detention_in_md = detention_facility_2 %in% md_facilities$detention_facility_code)|>
+  group_by(second_detention_in_md)|>
+  summarise(count=n())
+```
+
+## After that, nearly half are transferred to Louisiana and Texas, with others going to Pennsylvania, Virginia and about a dozen other states in the U.S. – separating them from their families, their lawyers and the support systems they’ve built since settling in the U.S. 
+```{r}
+
+## Adding location info for the facilities
+md_facilities<- md_arrests_with_detention|>
+  inner_join(facilities, by = "detention_facility_code")
+
+# Last MD detention for each person
+last_md <- md_facilities |>
+  filter(state == "MD") |>
+  group_by(unique_identifier, apprehension_date) |>
+  slice_max(facility_number, n = 1, with_ties = FALSE) |>
+  ungroup() |>
+  mutate(detention_type = "last_in_MD")
+
+# First non-MD detention for each person
+first_out_md <- md_facilities |>
+  filter(state != "MD") |>
+  group_by(unique_identifier, apprehension_date) |>
+  slice_min(facility_number, n = 1, with_ties = FALSE) |>
+  ungroup() |>
+  mutate(detention_type = "first_out_of_MD")
+
+# Combine them
+md_transitions <- bind_rows(last_md, first_out_md) |>
+  arrange(unique_identifier, apprehension_date, facility_number)
+
+md_transitions_wider <- md_transitions|>
+  pivot_wider(
+    names_from = detention_type,
+    names_prefix = "detention_facility_",
+    values_from = detention_facility_code
+  )|>
+  group_by(unique_identifier)|>
+  summarise(across(starts_with("detention_facility"), 
+                   ~na.omit(.x)[1]))|>
+  #filter out NA's in the last in Maryland if they do not have that record, and NA's in the first out of Maryland which tell us the person never left Maryland in that detention stint
+  filter(
+    detention_facility_first_out_of_MD != "NA",
+    detention_facility_last_in_MD != "NA")|>
+  #join with facilities again to get coordinates
+  left_join(facilities, by = c("detention_facility_last_in_MD" = "detention_facility_code")) |>
+  rename(from_lat = latitude, from_lon = longitude) |>
+  left_join(facilities, by = c("detention_facility_first_out_of_MD" = "detention_facility_code")) |>
+  rename(to_lat = latitude, to_lon = longitude)
+
+#finding which states most are transferred to after being detained in Maryland
+transfers_md <- md_transitions_wider|>
+  group_by(state.y)|>
+  summarise(count = n())|>
+  mutate(pct = (count/sum(count)*100))|>
+  arrange(desc(pct))
+
+```
+## 98% of individuals arrested in Maryland are first detained in the Baltimore or Salisbury hold rooms. 
+```{r}
+first_detention_location<-detention_transfers|>
+  group_by(detention_facility_1)|>
+  summarize(count=n())|>
+  mutate(pct = (count/sum(count)*100))
+```
+
+##Individuals are only supposed to stay in these hold rooms for 72 hours, under a limit imposed by federal mandate. Yet about a quarter of individuals arrested in the field and booked into the Baltimore holding rooms have gone above that 72 hour limit.
+```{r}
+
+#Calculating length of stay in Baltimore Holding Rooms
+bmore_arrests_with_detention <- md_arrests_detentions|>
+  filter(detention_facility_code == "BALHOLD")|>
+  mutate(
+    detention_book_out_date_time = mdy_hm(detention_book_out_date_time),
+    stay_at_hold = as.numeric(difftime(detention_book_out_date_time, book_in_date_time, units= "hours"))
+         )
+
+bmore_arrests_with_detention |> summarize(
+    avg_length_hold = mean (stay_at_hold, na.rm = TRUE),
+    median_length_hold = median (stay_at_hold, na.rm = TRUE)
+)
+
+## Calculating overstays in the Baltimore hold room
+hold_room_over_stays <- bmore_arrests_with_detention|>
+  mutate(overstay = (stay_at_hold >= 72))|>
+  group_by(overstay)|>
+  summarise(count=n())|>
+  mutate(pct= (count/sum(count)*100))
+```

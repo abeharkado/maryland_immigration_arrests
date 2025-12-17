@@ -1,0 +1,221 @@
+---
+title: "far_from_home_graphics"
+output: html_document
+date: "2025-12-10"
+---
+```{r}
+library(tidyverse)
+library(lubridate)
+library(janitor)
+library(readxl)
+library(sf)
+library(openxlsx)
+library(leaflet)
+library(geosphere)
+```
+## Load ICE Data Files
+```{r}
+# CHUNK 1: Load ICE administrative arrests data
+arrests <- read_xlsx("arrests-latest.xlsx") %>%
+  clean_names()
+```
+```{r}
+# CHUNK 2: Load ICE detainers data
+detainers <- read_xlsx("detainers-latest.xlsx", guess_max = 100000) %>%
+  clean_names()
+```
+```{r}
+# CHUNK 3: Load ICE detentions data from two sheets and combine
+detentions_1 <- read.csv("ICE Detentions_LESA-STU_FINAL Release_raw_sheet1.csv", skip = 6) |> clean_names()
+detentions_2 <- read.csv("ICE Detentions_LESA-STU_FINAL Release_raw_sheet2.csv", skip = 6) |> clean_names()
+detentions_full <- bind_rows(detentions_1, detentions_2)
+```
+```{r}
+# CHUNK 4: Read in facilities from https://www.vera.org/ice-detention-trends.
+facilities <- read_csv("facilities.csv")
+```
+## Defining dates
+```{r}
+inauguration_date <- as_date("2025-01-20")
+```
+# Creating the line graph of arrests
+```{r}
+md_street_arrests <- arrests |> 
+  filter(apprehension_aor == "Baltimore Area of Responsibility",
+         apprehension_state == "MARYLAND",
+         apprehension_method == "Non-Custodial Arrest" | apprehension_method == "Located") |>
+  mutate(
+    under_trump = (apprehension_date >= inauguration_date),
+    month = month(apprehension_date),
+    year = year(apprehension_date),
+    month_year = paste(month, "/", year)
+  ) |> 
+  group_by(month_year, year) |>
+  summarize(count = n())
+write_csv(md_street_arrests, "md_street_arrests.csv")
+```
+# Creating the map of detentions
+```{r}
+maryland_arrests <- arrests |>
+  filter(apprehension_state == "MARYLAND",
+         apprehension_aor == "Baltimore Area of Responsibility",
+         apprehension_method == "Non-Custodial Arrest" | apprehension_method == "Located",
+         apprehension_date >= inauguration_date) |>
+  mutate(under_trump = (apprehension_date >= inauguration_date))
+
+maryland_arrests_detentions <- maryland_arrests |>
+  inner_join(detentions_full, by = "unique_identifier") |>
+  select(unique_identifier, apprehension_date, apprehension_state, apprehension_aor, apprehension_method, stay_book_in_date_time, book_in_date_time, under_trump, detention_facility_code, detention_facility) |>
+  mutate(
+    apprehension_date = as_date(apprehension_date),
+    stay_book_in_date_time = as_date(mdy_hm(stay_book_in_date_time)),
+    book_in_date_time = as_date(mdy_hm(book_in_date_time)),
+    days_diff = as.numeric(difftime(stay_book_in_date_time, apprehension_date, units = "days"))
+  )
+
+maryland_arrests_with_detention <- maryland_arrests_detentions |>
+  filter(days_diff >= -1, days_diff <= 9) |>
+  arrange(unique_identifier, stay_book_in_date_time, book_in_date_time) |>
+  group_by(unique_identifier, stay_book_in_date_time) |>
+  distinct(unique_identifier, apprehension_date, stay_book_in_date_time, detention_facility_code, .keep_all = TRUE) |>
+  arrange(unique_identifier, book_in_date_time) |>
+  mutate(facility_number = row_number())
+
+md_facilities <- maryland_arrests_with_detention |>
+  inner_join(facilities, by = "detention_facility_code")
+
+last_md <- md_facilities |>
+  filter(state == "MD") |>
+  group_by(unique_identifier, apprehension_date) |>
+  slice_max(facility_number, n = 1, with_ties = FALSE) |>
+  ungroup() |>
+  mutate(detention_type = "last_in_MD")
+
+first_out_md <- md_facilities |>
+  filter(state != "MD") |>
+  group_by(unique_identifier, apprehension_date) |>
+  slice_min(facility_number, n = 1, with_ties = FALSE) |>
+  ungroup() |>
+  mutate(detention_type = "first_out_of_MD")
+
+md_transitions <- bind_rows(last_md, first_out_md) |>
+  arrange(unique_identifier, apprehension_date, facility_number)
+
+md_transitions_wider <- md_transitions |>
+  pivot_wider(
+    names_from = detention_type,
+    names_prefix = "detention_facility_",
+    values_from = detention_facility_code
+  ) |>
+  group_by(unique_identifier) |>
+  summarise(across(starts_with("detention_facility"), ~na.omit(.x)[1])) |>
+  filter(
+    detention_facility_first_out_of_MD != "NA",
+    detention_facility_last_in_MD != "NA"
+  ) |>
+  left_join(facilities, by = c("detention_facility_last_in_MD" = "detention_facility_code")) |>
+  rename(from_lat = latitude, from_lon = longitude) |>
+  left_join(facilities, by = c("detention_facility_first_out_of_MD" = "detention_facility_code")) |>
+  rename(to_lat = latitude, to_lon = longitude)
+
+# Calculate distances for each transfer
+md_transitions_wider <- md_transitions_wider |>
+  rowwise() |>
+  mutate(
+    distance_miles = round(geosphere::distHaversine(
+      c(from_lon, from_lat),
+      c(to_lon, to_lat)
+    ) * 0.000621371)
+  ) |>
+  ungroup()
+
+# Create lines (a geography column for map)
+transfers_map <- md_transitions_wider |>  
+  rowwise() |>
+  mutate(
+    geometry = st_sfc(
+      st_linestring(
+        matrix(c(from_lon, from_lat, to_lon, to_lat),
+               ncol = 2,
+               byrow = TRUE)
+      ),
+      crs = 4326
+    )
+  ) |>
+  ungroup() |>
+  st_as_sf()
+st_write(transfers_map, "transfers_map.geojson", append = FALSE)
+write_csv(md_transitions_wider |> st_drop_geometry(), "transfers_with_distances.csv")
+```
+## Creating a points dataframe for all of our detention facilities used, with transfer distance
+```{r}
+maryland_arrests <- arrests |>
+  filter(apprehension_state == "MARYLAND",
+         apprehension_aor == "Baltimore Area of Responsibility",
+         apprehension_method == "Non-Custodial Arrest" | apprehension_method == "Located",
+         apprehension_date >= inauguration_date) |>
+  mutate(under_trump = (apprehension_date >= inauguration_date))
+
+maryland_arrests_detentions <- maryland_arrests |>
+  filter(under_trump == "TRUE") |>
+  inner_join(detentions_full, by = "unique_identifier") |>
+  select(unique_identifier, apprehension_date, apprehension_state, apprehension_aor, apprehension_method, stay_book_in_date_time, book_in_date_time, under_trump, detention_facility_code, detention_facility) |>
+  mutate(
+    apprehension_date = as_date(apprehension_date),
+    stay_book_in_date_time = as_date(mdy_hm(stay_book_in_date_time)),
+    book_in_date_time = as_date(mdy_hm(book_in_date_time)),
+    days_diff = as.numeric(difftime(stay_book_in_date_time, apprehension_date, units = "days"))
+  )
+
+maryland_arrests_with_detention <- maryland_arrests_detentions |>
+  filter(days_diff >= -1, days_diff <= 9) |>
+  arrange(unique_identifier, stay_book_in_date_time, book_in_date_time) |>
+  group_by(unique_identifier, stay_book_in_date_time) |>
+  distinct(unique_identifier, apprehension_date, stay_book_in_date_time, detention_facility_code, .keep_all = TRUE) |>
+  arrange(unique_identifier, book_in_date_time) |>
+  mutate(facility_number = row_number())
+
+md_facilities <- maryland_arrests_with_detention |>
+  inner_join(facilities, by = "detention_facility_code")
+
+last_md <- md_facilities |>
+  filter(state == "MD") |>
+  group_by(unique_identifier, apprehension_date) |>
+  slice_max(facility_number, n = 1, with_ties = FALSE) |>
+  ungroup() |>
+  mutate(detention_type = "last_in_MD")
+
+first_out_md <- md_facilities |>
+  filter(state != "MD") |>
+  group_by(unique_identifier, apprehension_date) |>
+  slice_min(facility_number, n = 1, with_ties = FALSE) |>
+  ungroup() |>
+  mutate(detention_type = "first_out_of_MD")
+
+md_transitions <- bind_rows(last_md, first_out_md) |>
+  arrange(unique_identifier, apprehension_date, facility_number)
+
+points_md_map <- md_transitions |>
+  group_by(detention_facility_code, longitude, latitude, state, detention_facility_name) |>
+  summarize(individuals_in_detention = n())
+
+# Join the transfer distance to the destination facility (first_out_of_MD)
+points_md_map_with_distance <- points_md_map |>
+  left_join(
+    md_transitions_wider |>
+      select(detention_facility_first_out_of_MD, distance_miles),
+    by = c("detention_facility_code" = "detention_facility_first_out_of_MD")
+  )
+
+# Tooltip column for Flourish
+points_md_map_with_distance <- points_md_map_with_distance |>
+  mutate(
+    tooltip_text = paste0(
+      detention_facility_name, " (", state, ")<br>",
+      "Individuals in detention: ", individuals_in_detention, "<br>",
+      "Transfer distance: ", distance_miles, " miles"
+    )
+  )
+
+write_csv(points_md_map_with_distance, "points_md_map_with_distance.csv")
+```
