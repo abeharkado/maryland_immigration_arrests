@@ -27,10 +27,9 @@ Large data files are excluded from this repository; data associated with this re
 [Data Files (Google Drive)](https://drive.google.com/drive/folders/1VqsJH3MKBzSEmm_re0ONH8M8b5ruoqso?usp=sharing)
 
 The key datasets used in this analysis are:
-
-arrests-latest.xlsx
-ICE Detentions_LESA-STU_FINAL Release_raw.xlsx
-facilities.csv
+- arrests-latest.xlsx
+- ICE Detentions_LESA-STU_FINAL Release_raw.xlsx
+- facilities.csv
 
 ## Methodology
 
